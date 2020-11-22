@@ -4,6 +4,7 @@ go 1.15
 
 require (
 	filippo.io/age v1.0.0-beta5
+	github.com/pkg/errors v0.8.1
 	github.com/sirupsen/logrus v1.2.0
 	github.com/spf13/cobra v1.1.1
 	golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59

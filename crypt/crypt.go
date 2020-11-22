@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
+	"github.com/pkg/errors"
 	shage "github.com/pleclech/secret-helper/age"
 	"github.com/pleclech/secret-helper/cleanup"
 	"github.com/pleclech/secret-helper/editor"
@@ -24,13 +24,13 @@ import (
 )
 
 const (
-	VaultTag = "!vault"
-	AgeTag   = "!age"
+	VaultTag    = "!vault"
+	AgeTag      = "!age"
+	TripleQuote = "\"\"\""
 )
 
 var (
-	reYamlAgeEntry = regexp.MustCompile(`([^\S\r\n]*)(\w+):(\s+)[!]age(.*)[\||>].*`)
-	reYamlAgeArmor = regexp.MustCompile(`(?s)(\n*)(\s*)(-{5}BEGIN AGE ENCRYPTED FILE-{5}(.+?)(\s+?)-{5}END AGE ENCRYPTED FILE-{5})`)
+	reMLCryptEntry = regexp.MustCompile(`(?s)["]{3}(\n)(\s*)(!(age|vault)([^\n]*))(\n)(.+?)(["]{3})`)
 	reSpaces       = regexp.MustCompile(`^(\s+)`)
 )
 
@@ -54,6 +54,10 @@ func (in InputInfo) TmpExt() string {
 
 func (in InputInfo) IsYaml() bool {
 	return in.contentType == "yaml"
+}
+
+func (in InputInfo) IsCue() bool {
+	return in.contentType == "cue"
 }
 
 func (in InputInfo) IsJson() bool {
@@ -158,22 +162,6 @@ func (in *InputInfo) Edit() error {
 	return in.Encrypt()
 }
 
-func padd(source string, paddLen int) string {
-	var buf bytes.Buffer
-	padd := fmt.Sprintf("%%%ds", paddLen)
-	padd = fmt.Sprintf(padd, " ")
-	lines := strings.Split(source, "\n")
-	ln := len(lines) - 2
-	for i, line := range lines {
-		buf.WriteString(padd)
-		buf.WriteString(line)
-		if i < ln {
-			buf.WriteRune('\n')
-		}
-	}
-	return buf.String()
-}
-
 func (inf *InputInfo) unmarshalYaml(encrypt bool) (*yaml.Node, error) {
 	yn := &yaml.Node{}
 
@@ -192,7 +180,8 @@ func (inf *InputInfo) processYamlNode(yn *yaml.Node, parent *yaml.Node, nodeInde
 			if !shage.MaybeEncrypted(yn.Value) {
 				tmp, err := shage.Encrypt(yn.Value, inf.recipients...)
 				if err != nil {
-					log.Warnf("can't encrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+					err = fmt.Errorf("can't encrypt value <%s> : %w", helper.TruncateString(yn.Value, 4), err)
+					log.Warn(err)
 				} else {
 					yn.Value = tmp
 				}
@@ -201,7 +190,8 @@ func (inf *InputInfo) processYamlNode(yn *yaml.Node, parent *yaml.Node, nodeInde
 			if shage.MaybeEncrypted(yn.Value) {
 				tmp, err := shage.Decrypt(yn.Value, inf.identities...)
 				if err != nil {
-					log.Warnf("can't decrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+					err = fmt.Errorf("can't decrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+					log.Warn(err)
 				} else {
 					yn.Value = tmp
 				}
@@ -213,7 +203,8 @@ func (inf *InputInfo) processYamlNode(yn *yaml.Node, parent *yaml.Node, nodeInde
 				if !vault.MaybeEncrypted(yn.Value) {
 					tmp, err := vault.Encrypt(yn.Value, inf.vaultKey, 0)
 					if err != nil {
-						log.Warnf("can't encrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+						err = fmt.Errorf("can't encrypt value <%s> : %w", helper.TruncateString(yn.Value, 4), err)
+						log.Warn(err)
 					} else {
 						yn.Value = tmp
 					}
@@ -222,7 +213,8 @@ func (inf *InputInfo) processYamlNode(yn *yaml.Node, parent *yaml.Node, nodeInde
 				if vault.MaybeEncrypted(yn.Value) {
 					tmp, err := vault.Decrypt(yn.Value, inf.vaultKey)
 					if err != nil {
-						log.Warnf("can't decrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+						err = fmt.Errorf("can't decrypt value <%s> : %w", helper.TruncateString(yn.Value, 64), err)
+						log.Warn(err)
 					} else {
 						yn.Value = tmp
 					}
@@ -250,55 +242,131 @@ func (inf *InputInfo) encryptYaml() error {
 	inf.content = tmp.Bytes()
 
 	return nil
+}
 
+type CryptBlock struct {
+	Match     string
+	Mode      string
+	Spacing   string
+	Value     string
+	encrypted bool
+}
+
+func (cb CryptBlock) String() string {
+	value := cb.Value
+
+	if cb.encrypted {
+		value = strings.TrimSuffix(value, "\n")
+	}
+
+	value = strings.ReplaceAll(value, "\n", "\n"+cb.Spacing)
+
+	return fmt.Sprintf("%s\n%s!%s\n%s%s\n%s%s", TripleQuote, cb.Spacing, cb.Mode, cb.Spacing, value, cb.Spacing, TripleQuote)
+}
+
+func (cb *CryptBlock) Decrypt(identities []age.Identity, vaultKey string) error {
+	cb.encrypted = false
+	switch cb.Mode {
+	case "age":
+		if !shage.MaybeEncrypted(cb.Value) {
+			return nil
+		}
+		tmp, err := shage.Decrypt(cb.Value, identities...)
+		if err != nil {
+			cb.encrypted = true
+			return err
+		}
+		cb.Value = tmp
+	case "vault":
+		if !vault.MaybeEncrypted(cb.Value) {
+			cb.encrypted = true
+			return nil
+		}
+		tmp, err := vault.Decrypt(cb.Value, vaultKey)
+		if err != nil {
+			return err
+		}
+		cb.Value = tmp
+	default:
+		return errors.Errorf("unknow crypt mode : %q", cb.Mode)
+	}
+	return nil
+}
+
+func (cb *CryptBlock) Encrypt(recipients []age.Recipient, vaultKey string) error {
+	cb.encrypted = true
+	switch cb.Mode {
+	case "age":
+		if shage.MaybeEncrypted(cb.Value) {
+			return nil
+		}
+		tmp, err := shage.Encrypt(cb.Value, recipients...)
+		if err != nil {
+			cb.encrypted = false
+			return err
+		}
+		cb.Value = tmp
+	case "vault":
+		if vault.MaybeEncrypted(cb.Value) {
+			return nil
+		}
+		tmp, err := vault.Encrypt(cb.Value, vaultKey, 0)
+		if err != nil {
+			cb.encrypted = false
+			return err
+		}
+		cb.Value = tmp
+	default:
+		return errors.Errorf("unknow crypt mode : %q", cb.Mode)
+	}
+	return nil
+}
+
+func NewCryptBlock(matches []string) *CryptBlock {
+	ret := &CryptBlock{
+		Match:   matches[0],
+		Mode:    matches[4],
+		Spacing: matches[2],
+	}
+	tmp := strings.ReplaceAll(matches[7], ret.Spacing, "")
+	ret.Value = tmp[:len(tmp)-1]
+	return ret
+}
+
+func (inf *InputInfo) encryptCue() error {
 	content := string(inf.content)
 
-	matches := reYamlAgeEntry.FindAllStringSubmatch(content, -1)
-doCrypt:
+	matches := reMLCryptEntry.FindAllStringSubmatch(content, -1)
+
 	for _, match := range matches {
-		spaceLen := len(match[1])
-		pat := fmt.Sprintf(`%s(((\s{%d,})(.+))+)`, regexp.QuoteMeta(match[0]), spaceLen+2)
-		reN := regexp.MustCompile(pat)
-		values := reN.FindAllStringSubmatch(content, -1)
-		if len(values) > 0 {
-			value := values[0][1]
-			var bb bytes.Buffer
-			sep := ""
-			for i, tmp := range strings.Split(value[1:], "\n") {
-				tmp = strings.TrimSpace(tmp)
-				if i == 0 && strings.HasPrefix(tmp, armor.Header) {
-					continue doCrypt
-				}
-				bb.WriteString(sep)
-				bb.WriteString(tmp)
-				sep = "\n"
-			}
-
-			in := bytes.NewReader(bb.Bytes())
-
-			var out bytes.Buffer
-			armorWriter := armor.NewWriter(&out)
-			w, err := age.Encrypt(armorWriter, inf.recipients...)
-			if err != nil {
-				return err
-			}
-
-			if _, err := io.Copy(w, in); err != nil {
-				return fmt.Errorf("can't encrypt : %w", err)
-			}
-
-			if err = w.Close(); err != nil {
-				return fmt.Errorf("can't close encrypted output : %w", err)
-			}
-
-			if err = armorWriter.Close(); err != nil {
-				return fmt.Errorf("can't close encrypted armor : %w", err)
-			}
-
-			decValue := strings.TrimRight(padd(out.String(), spaceLen+2), " ")
-			content = strings.Replace(content, value, "\n"+decValue, -1)
+		cb := NewCryptBlock(match)
+		err := cb.Encrypt(inf.recipients, inf.vaultKey)
+		if err != nil {
+			err = fmt.Errorf("can't encrypt value <%s> : %w", helper.TruncateString(cb.Value, 4), err)
+			log.Warn(err)
 		}
+		content = strings.ReplaceAll(content, cb.Match, cb.String())
 	}
+
+	inf.content = []byte(content)
+	return nil
+}
+
+func (inf *InputInfo) decryptCue() error {
+	content := string(inf.content)
+
+	matches := reMLCryptEntry.FindAllStringSubmatch(content, -1)
+
+	for _, match := range matches {
+		cb := NewCryptBlock(match)
+		err := cb.Decrypt(inf.identities, inf.vaultKey)
+		if err != nil {
+			err = fmt.Errorf("can't decrypt value <%s> : %w", helper.TruncateString(cb.Value, 64), err)
+			log.Warn(err)
+		}
+		content = strings.ReplaceAll(content, cb.Match, cb.String())
+	}
+
 	inf.content = []byte(content)
 	return nil
 }
@@ -327,12 +395,18 @@ func (inf *InputInfo) Encrypt() error {
 	if inf.IsYaml() {
 		return inf.encryptYaml()
 	}
+	if inf.IsCue() {
+		return inf.encryptCue()
+	}
 	return fmt.Errorf("raw encryption not implemented")
 }
 
 func (inf *InputInfo) Decrypt() error {
 	if inf.IsYaml() {
 		return inf.decryptYaml()
+	}
+	if inf.IsCue() {
+		return inf.decryptCue()
 	}
 	return fmt.Errorf("raw decryption not implemented")
 }
@@ -377,6 +451,8 @@ func NewInputInfo(workingDir string, input string, contentType string, privateKe
 				ret.contentType = "yaml"
 			} else if strings.Index(contentName, ".json") >= 0 {
 				ret.contentType = "json"
+			} else if strings.Index(contentName, ".cue") >= 0 {
+				ret.contentType = "cue"
 			}
 		}
 	}

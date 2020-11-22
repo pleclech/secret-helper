@@ -20,7 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const version = "1.0.0"
+var Version = "v1.0.0"
 
 func main() {
 	customFormatter := new(logrus.TextFormatter)
@@ -28,5 +28,5 @@ func main() {
 	customFormatter.FullTimestamp = true
 	logrus.SetFormatter(customFormatter)
 
-	cmd.Execute(version)
+	cmd.Execute(Version)
 }

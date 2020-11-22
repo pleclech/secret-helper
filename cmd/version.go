@@ -27,7 +27,7 @@ var versionCmd = &cobra.Command{
 	Short: "show secret-helper version",
 	Long:  `show secret-helper version`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("v%s\n", version)
+		fmt.Printf("%s\n", version)
 	},
 }
 
