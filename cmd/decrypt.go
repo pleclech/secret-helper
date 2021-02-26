@@ -34,7 +34,7 @@ var decryptCmd = &cobra.Command{
 			Fail(err)
 		}
 
-		if err = inf.Decrypt(); err != nil {
+		if err = inf.Decrypt(false); err != nil {
 			Fail(err)
 		}
 

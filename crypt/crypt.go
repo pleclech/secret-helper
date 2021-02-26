@@ -64,6 +64,10 @@ func (in InputInfo) IsJson() bool {
 	return in.contentType == "json"
 }
 
+func (in InputInfo) IsEnv() bool {
+	return in.contentType == "env"
+}
+
 func (in InputInfo) Identities() []age.Identity {
 	return in.identities
 }
@@ -145,7 +149,7 @@ func getContent(workingDir, source string) (content []byte, fileName string) {
 }
 
 func (in *InputInfo) Edit() error {
-	if err := in.Decrypt(); err != nil {
+	if err := in.Decrypt(true); err != nil {
 		return err
 	}
 
@@ -252,16 +256,19 @@ type CryptBlock struct {
 	encrypted bool
 }
 
-func (cb CryptBlock) String() string {
+func (cb CryptBlock) String(forEditing bool) string {
 	value := cb.Value
 
 	if cb.encrypted {
 		value = strings.TrimSuffix(value, "\n")
 	}
 
-	value = strings.ReplaceAll(value, "\n", "\n"+cb.Spacing)
-
-	return fmt.Sprintf("%s\n%s!%s\n%s%s\n%s%s", TripleQuote, cb.Spacing, cb.Mode, cb.Spacing, value, cb.Spacing, TripleQuote)
+	if forEditing {
+		value = strings.ReplaceAll(value, "\n", "\n"+cb.Spacing)
+		return fmt.Sprintf("%s\n%s!%s\n%s%s\n%s%s", TripleQuote, cb.Spacing, cb.Mode, cb.Spacing, value, cb.Spacing, TripleQuote)
+	} else {
+		return fmt.Sprintf("%s%s%s", TripleQuote, value, TripleQuote)
+	}
 }
 
 func (cb *CryptBlock) Decrypt(identities []age.Identity, vaultKey string) error {
@@ -345,14 +352,14 @@ func (inf *InputInfo) encryptCue() error {
 			err = fmt.Errorf("can't encrypt value <%s> : %w", helper.TruncateString(cb.Value, 4), err)
 			log.Warn(err)
 		}
-		content = strings.ReplaceAll(content, cb.Match, cb.String())
+		content = strings.ReplaceAll(content, cb.Match, cb.String(true))
 	}
 
 	inf.content = []byte(content)
 	return nil
 }
 
-func (inf *InputInfo) decryptCue() error {
+func (inf *InputInfo) decryptCue(forEditing bool) error {
 	content := string(inf.content)
 
 	matches := reMLCryptEntry.FindAllStringSubmatch(content, -1)
@@ -364,7 +371,45 @@ func (inf *InputInfo) decryptCue() error {
 			err = fmt.Errorf("can't decrypt value <%s> : %w", helper.TruncateString(cb.Value, 64), err)
 			log.Warn(err)
 		}
-		content = strings.ReplaceAll(content, cb.Match, cb.String())
+		content = strings.ReplaceAll(content, cb.Match, cb.String(forEditing))
+	}
+
+	inf.content = []byte(content)
+	return nil
+}
+
+func (inf *InputInfo) encryptEnv() error {
+	content := string(inf.content)
+
+	matches := reMLCryptEntry.FindAllStringSubmatch(content, -1)
+
+	for _, match := range matches {
+		cb := NewCryptBlock(match)
+		err := cb.Encrypt(inf.recipients, inf.vaultKey)
+		if err != nil {
+			err = fmt.Errorf("can't encrypt value <%s> : %w", helper.TruncateString(cb.Value, 4), err)
+			log.Warn(err)
+		}
+		content = strings.ReplaceAll(content, cb.Match, cb.String(true))
+	}
+
+	inf.content = []byte(content)
+	return nil
+}
+
+func (inf *InputInfo) decryptEnv(forEditing bool) error {
+	content := string(inf.content)
+
+	matches := reMLCryptEntry.FindAllStringSubmatch(content, -1)
+
+	for _, match := range matches {
+		cb := NewCryptBlock(match)
+		err := cb.Decrypt(inf.identities, inf.vaultKey)
+		if err != nil {
+			err = fmt.Errorf("can't decrypt value <%s> : %w", helper.TruncateString(cb.Value, 64), err)
+			log.Warn(err)
+		}
+		content = strings.ReplaceAll(content, cb.Match, cb.String(forEditing))
 	}
 
 	inf.content = []byte(content)
@@ -398,15 +443,27 @@ func (inf *InputInfo) Encrypt() error {
 	if inf.IsCue() {
 		return inf.encryptCue()
 	}
+	if inf.IsEnv() {
+		return inf.encryptEnv()
+	}
+	if inf.IsJson() {
+		return fmt.Errorf("json encryption not implemented")
+	}
 	return fmt.Errorf("raw encryption not implemented")
 }
 
-func (inf *InputInfo) Decrypt() error {
+func (inf *InputInfo) Decrypt(forEditing bool) error {
 	if inf.IsYaml() {
 		return inf.decryptYaml()
 	}
 	if inf.IsCue() {
-		return inf.decryptCue()
+		return inf.decryptCue(forEditing)
+	}
+	if inf.IsEnv() {
+		return inf.decryptEnv(forEditing)
+	}
+	if inf.IsJson() {
+		return fmt.Errorf("json decryption not implemented")
 	}
 	return fmt.Errorf("raw decryption not implemented")
 }
@@ -453,6 +510,8 @@ func NewInputInfo(workingDir string, input string, contentType string, privateKe
 				ret.contentType = "json"
 			} else if strings.Index(contentName, ".cue") >= 0 {
 				ret.contentType = "cue"
+			} else if strings.Index(contentName, ".env") >= 0 {
+				ret.contentType = "env"
 			}
 		}
 	}
