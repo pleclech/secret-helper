@@ -35,11 +35,34 @@ func Decrypt(input string, ids ...age.Identity) (string, error) {
 	return out.String(), nil
 }
 
+type armorWriterProxy struct {
+	haveNewLine bool
+	writer      io.Writer
+}
+
+var end = []byte("\n-----END")
+
+func (w *armorWriterProxy) Write(p []byte) (n int, err error) {
+	pLen := len(p)
+	if pLen == 0 {
+		return 0, nil
+	}
+	if len(p) > 8 && bytes.Compare(p[0:9], end) == 0 {
+		if w.haveNewLine {
+			p = p[1:]
+		}
+	} else {
+		w.haveNewLine = p[pLen-1] == 10
+	}
+	return w.writer.Write(p)
+}
+
 func Encrypt(input string, rcpts ...age.Recipient) (string, error) {
 	in := strings.NewReader(input)
 
 	var out bytes.Buffer
-	armorWriter := armor.NewWriter(&out)
+	awp := &armorWriterProxy{false, &out}
+	armorWriter := armor.NewWriter(awp)
 	w, err := age.Encrypt(armorWriter, rcpts...)
 	if err != nil {
 		return input, err

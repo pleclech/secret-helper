@@ -478,25 +478,19 @@ func NewInputInfo(workingDir string, input string, contentType string, privateKe
 	}
 
 	if len(privateKey) > 0 {
-		ids, err := IdentitiesFromStrings(workingDir, []string{privateKey})
+		ids, rcpts, err := IdentitiesFromStrings(workingDir, []string{privateKey})
 		if err != nil {
 			return ret, err
 		}
 		ret.identities = ids
+		ret.recipients = rcpts
 	}
 
 	recipients, err := RecipientsFromStrings(workingDir, publicKeys)
 	if err != nil {
 		return ret, err
 	}
-
-	if len(ret.identities) > 0 {
-		if recipient, ok := IdentityToRecipient(ret.identities[0]); ok {
-			recipients = append(recipients, recipient)
-		}
-	}
-
-	ret.recipients = recipients
+	ret.recipients = append(ret.recipients, recipients...)
 
 	if contentName != "" {
 		ret.fileExt = filepath.Ext(contentName)
@@ -527,7 +521,7 @@ func NewInputInfo(workingDir string, input string, contentType string, privateKe
 		if err != nil {
 			return ret, err
 		}
-		ret.vaultKey, err = helper.ReadAndClean(ior)
+		ret.vaultKey, err = helper.ReadAndClean(ior, false)
 		if err != nil {
 			return ret, err
 		}
